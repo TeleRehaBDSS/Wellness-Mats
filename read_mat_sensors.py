@@ -146,7 +146,7 @@ def export_queue_to_csv(queue, csv_filename):
 
     print(f"Data successfully exported to {csv_filename}")
 
-def data_collection_process(running_flag,data_queue,export_queue):
+def data_collection_process(event, running_flag,data_queue,export_queue):
     # Start the data collection process
     data_process = []
     saved_data = []
@@ -156,18 +156,18 @@ def data_collection_process(running_flag,data_queue,export_queue):
     for mat in walking_path:
         #print('I am here.....')
         data_process.append('')
-        data_process[c] = multiprocessing.Process(target=get_treadmill_mat_pressures, args=(c, mat, data_queue, export_queue, running_flag,saved_data,))
+        data_process[c] = multiprocessing.Process(target=get_treadmill_mat_pressures, args=(event, c, mat, data_queue, export_queue, running_flag,saved_data,))
         data_process[c].start()
         c = c + 1
 
 
 
 
-def get_treadmill_mat_pressures(counter, mat, queue, export_queue, running_flag,saved_data):
+def get_treadmill_mat_pressures(event, counter, mat, queue, export_queue, running_flag,saved_data):
   stopwatch = time.time() + exercise_runtime
   sample = 0
   if running_flag: 
-    while time.time() < stopwatch:
+    while time.time() < stopwatch and event.is_set():
         timepoint = dt.now().isoformat()
         treadmill_data = []
 

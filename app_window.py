@@ -4,7 +4,7 @@ import os
 import numpy as np
 from configuration import config, exercise_type_map, metrics_type_map
 import multiprocessing
-from multiprocessing import Value
+from multiprocessing import Value, Event
 from read_mat_sensors import get_mat_pressures, process_visualization, data_collection_process
 from PyQt5.QtGui import QPixmap
 os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = "/home/uoi/.local/lib/python3.8/site-packages/PyQt5/Qt/plugins"
@@ -13,6 +13,11 @@ from PyQt5 import QtWidgets, QtCore
 import json
 import csv
 import time
+
+from multiprocessing import set_start_method
+#set_start_method('spawn')
+
+
 
 def export_collected_data_from_queue(self):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -77,6 +82,7 @@ class ComboBoxNoWheel(QtWidgets.QComboBox): #Class for combobox (without wheel)
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
+        self.event = Event();
         super(MainWindow, self).__init__()
         self.setWindowTitle("TeleRehaB DSS")
         self.setGeometry(100, 100, 1000, 600)
@@ -386,6 +392,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Missing Patient ID", "Please enter a Patient ID before starting an exercise.")
             return
         self.running = Value('b', True)
+        self.event.set();
         self.exercise_info.clear()
         self.type_box.setEnabled(False)
         self.exercise_box.setEnabled(False)
@@ -405,11 +412,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Use the correct widget and data queue for the selected exercise
         single_mat_exercises = [
-            "Sit to stand", "Rise to toes", "Stand on one leg",
-            "Compensatory stepping correction- FORWARD",
-            "Compensatory stepping correction- BACKWARD",
-            "Compensatory stepping correction- LATERAL",
-            "Stance, Eyes open", "Stance, Eyes closed"
+      ""
         ]
 
         if self.exercise_box.currentText() in single_mat_exercises:
@@ -426,7 +429,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.heatmap_widget = PressureMapAppTreadmill(self.visual_queue)
             self.heatmap_layout.addWidget(self.heatmap_widget)
 
-            self.data_process = multiprocessing.Process(target=data_collection_process, args=(self.running, self.data_queue,self.export_queue))
+            self.data_process = multiprocessing.Process(target=data_collection_process, args=(self.event, self.running, self.data_queue,self.export_queue))
             self.visual_process = multiprocessing.Process(target=process_visualization, args=(self.visual_queue, self.data_queue,))
             self.data_process.start()
             self.visual_process.start()
@@ -439,6 +442,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def stop_exercise(self):
         self.running = Value('b', False)
+        self.event.clear();
         exercise_type = self.type_box.currentText()
         exercise = self.exercise_box.currentText()
         self.type_box.setEnabled(True)

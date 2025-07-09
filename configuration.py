@@ -12,7 +12,7 @@ config = {
 }
 
 exercise_type_map = {
-    "FGA": ["Gait Level Surface", "Change in gait speed","Gait with horizontal head turns","Gait with vertical head turns","Gait and pivot turn","Step over obstacle","Gait with narrow base of support","Gai with eyes closed","Ambulating backwards"],
+    "FGA": ["Gait Level Surface", "Change in gait speed","Gait with horizontal head turns","Gait with vertical head turns","Gait and pivot turn","Step over obstacle","Gait with narrow base of support","Gait with eyes closed","Ambulating backwards"],
     "MiniBEST": ["Sit to stand","Rise to toes","Stand on one leg","Compensatory stepping correction- FORWARD","Compensatory stepping correction- BACKWARD","Compensatory stepping correction- LATERAL","Stance, Eyes open","Stance, Eyes closed","Change in gait speed","Walk with head turns - HORIZONTAL","Walk with pivot turns","Step over obstacles","Timed up & go with duals task"]
 }
 
