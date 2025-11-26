@@ -432,7 +432,10 @@ def process_compensatory_stepping(csv_path: str, direction: str, participant: st
 def process_rise_to_toes(csv_path: str, participant: str) -> ExerciseResult:
     """
     Rise to toes.
-    Robust approach using Contact Area of valid frames only (ignoring dropouts).
+    Scoring:
+    (2) Normal: Stable for 3 s with maximum height.
+    (1) Moderate: Heels up, but not full range, OR noticeable instability for 3 s.
+    (0) Severe: < 3 s.
     """
     signals = load_basic_signals(csv_path)
     duration = _duration(signals)
@@ -460,55 +463,134 @@ def process_rise_to_toes(csv_path: str, participant: str) -> ExerciseResult:
     baseline_area = float(np.percentile(valid_area, 95))
     
     # 3. Threshold for "On Toes"
+    # Use a stricter threshold to ensure they are really up.
     thresh_ratio = 0.80
     area_thresh = baseline_area * thresh_ratio
     
     # 4. Smooth the Area signal
-    # Use a time-based window of ~0.2s for robust smoothing
     dt = max(signals.dt, 0.001)
     window_size_sec = 0.2
     window_size = max(3, int(window_size_sec / dt))
     smoothed_area = median_filter(valid_area, size=window_size)
     
-    # 5. Detection
+    # 5. Detection of "On Toes" state
     is_on_toes = smoothed_area < area_thresh
     
-    # 6. Calculate Duration
-    max_run_duration = 0.0
+    # 6. Calculate MAX CONTIGUOUS Duration
+    max_contiguous_duration = 0.0
     current_run_duration = 0.0
+    max_run_start_idx = 0
+    max_run_end_idx = 0
     
-    for i in range(1, len(valid_time)):
-        step_dt = valid_time[i] - valid_time[i-1]
+    current_run_start_idx = 0
+    is_running = False
+
+    for i in range(len(valid_time)):
+        if i > 0:
+            step_dt = valid_time[i] - valid_time[i-1]
+            # If there is a large gap in data, the run breaks
+            if step_dt > 0.5:
+                is_running = False
+                current_run_duration = 0.0
         
-        # Break run if gap is large (e.g. > 0.5s)
-        if step_dt > 0.5:
-            current_run_duration = 0.0
-            continue
-            
         if is_on_toes[i]:
-            current_run_duration += step_dt
+            if not is_running:
+                is_running = True
+                current_run_start_idx = i
+                current_run_duration = 0.0
+            elif i > 0:
+                current_run_duration += (valid_time[i] - valid_time[i-1])
+            
+            if current_run_duration > max_contiguous_duration:
+                max_contiguous_duration = current_run_duration
+                max_run_start_idx = current_run_start_idx
+                max_run_end_idx = i
         else:
-            max_run_duration = max(max_run_duration, current_run_duration)
+            is_running = False
             current_run_duration = 0.0
             
-    max_run_duration = max(max_run_duration, current_run_duration)
+    # 7. Stability Analysis during the Max Contiguous Phase
+    stability_score = 0.0
+    if max_contiguous_duration > 0:
+        # Map valid indices back to original signal indices to get CoP
+        # Note: active_mask aligns signals to valid_area.
+        # We need CoP for the "on toes" segment.
+        
+        # Get indices in the original arrays corresponding to the active mask
+        active_indices = np.where(active_mask)[0]
+        
+        # Slice the "on toes" run from the active indices
+        if max_run_end_idx > max_run_start_idx:
+            run_indices = active_indices[max_run_start_idx : max_run_end_idx+1]
+            
+            run_cop_x = signals.cop_x[run_indices]
+            run_cop_y = signals.cop_y[run_indices]
+            
+            # Calculate sway speed during this specific run
+            dx = np.diff(run_cop_x)
+            dy = np.diff(run_cop_y)
+            run_dt = dt # Approximation
+            speed = np.sqrt(dx**2 + dy**2) / run_dt
+            
+            # Filter extreme noise
+            valid_speed = speed[speed < 500]
+            if len(valid_speed) > 0:
+                stability_score = float(np.mean(valid_speed))
     
-    # Scoring
-    if max_run_duration >= 3.0:
-        score = 2
-    elif max_run_duration >= 0.5:
-        score = 1
+    # Calculate Flat Foot Stability (Baseline Stability)
+    # Map 'is_on_toes' (which is only for active frames) back to full length
+    is_on_toes_full = np.zeros_like(active_mask, dtype=bool)
+    is_on_toes_full[active_mask] = is_on_toes
+    
+    # Use indices where active but NOT on toes
+    flat_mask = active_mask & (~is_on_toes_full)
+    
+    flat_global_indices = np.where(flat_mask)[0]
+    
+    baseline_sway_speed = 0.0
+    if len(flat_global_indices) > 10:
+        # Speed calculation for full signal
+        dx = np.diff(signals.cop_x)
+        dy = np.diff(signals.cop_y)
+        full_speed = np.sqrt(dx**2 + dy**2) / dt
+        full_speed = np.concatenate(([0], full_speed))
+        
+        # Extract speeds during flat phase
+        flat_speeds = full_speed[flat_global_indices]
+        # Filter
+        flat_speeds = flat_speeds[(flat_speeds < 500) & np.isfinite(flat_speeds)]
+        if len(flat_speeds) > 0:
+            baseline_sway_speed = float(np.mean(flat_speeds))
+            
+    # Adaptive Instability Threshold
+    # If they are stable flat (e.g., 5-10), threshold will be ~30-40.
+    # If they are unstable flat (e.g., 30), threshold will be ~75.
+    base_thresh = 40.0
+    if baseline_sway_speed > 0:
+        instability_threshold = max(base_thresh, baseline_sway_speed * 2.5)
     else:
+        instability_threshold = 50.0 # Fallback
+    
+    if max_contiguous_duration < 3.0:
         score = 0
+    else:
+        # Duration is good. Check stability against adaptive threshold.
+        if stability_score > instability_threshold:
+            score = 1
+        else:
+            score = 2
 
     features = {
         "Trial Duration (s)": duration,
-        "Time on Toes (s)": max_run_duration,
+        "Max Contiguous On-Toes Duration (s)": max_contiguous_duration,
+        "Stability (Mean Sway Speed)": stability_score,
+        "Baseline Sway Speed (Flat)": baseline_sway_speed,
+        "Adaptive Instability Threshold": instability_threshold,
         "Baseline Area (pixels)": baseline_area,
-        "Min Active Area (pixels)": float(np.min(valid_area)),
         "Area Threshold": area_thresh,
         "_valid_time": valid_time,         # Pass for plotting
-        "_smoothed_area": smoothed_area    # Pass for plotting
+        "_smoothed_area": smoothed_area,   # Pass for plotting
+        "_on_toes_mask": is_on_toes        # Pass for plotting
     }
 
     return ExerciseResult(
@@ -521,45 +603,86 @@ def process_rise_to_toes(csv_path: str, participant: str) -> ExerciseResult:
     )
 
 
-def process_sit_to_stand(csv_path: str, participant: str) -> ExerciseResult:
+def process_sit_to_stand(csv_path: str, participant: str, used_hands: bool = False, multiple_attempts: bool = False) -> ExerciseResult:
     """
     Sit to Stand.
+    Scoring:
+    (2) Normal: Comes to stand without use of hands and stabilizes independently.
+    (1) Moderate: Comes to stand WITH use of hands on first attempt.
+    (0) Severe: Unable to stand up from chair without assistance, OR needs several attempts with use of hands.
     """
     signals = load_basic_signals(csv_path)
     full_duration = _duration(signals)
     
     f = signals.force
-    window = 10
-    f_smooth = np.convolve(f, np.ones(window)/window, mode='same') if len(f) > window else f
+    time_s = signals.time_s
     
-    max_f = np.max(f_smooth)
+    # Detect Rise Phase using Total Force
+    # Force should go from low (seated, feet maybe on mat but low weight) to high (standing, full weight)
+    # Or if they start seated OFF mat, force goes 0 -> BodyWeight
+    # If they start seated ON mat (chair on mat?), force is BodyWeight -> BodyWeight + Momentum -> BodyWeight.
+    # Assuming chair is OFF mat, feet on mat. Force increases as they shift weight to feet.
     
-    stable_mask = (f_smooth > 0.8 * max_f)
-    time_stable = np.sum(stable_mask) * signals.dt
+    max_f = np.max(f)
     
-    t_start_idx = np.where(f_smooth > 0.1 * max_f)[0]
-    t_end_idx = np.where(f_smooth > 0.9 * max_f)[0]
+    # Smooth force for robust detection
+    window = max(int(0.5 / signals.dt), 3)
+    f_smooth = np.convolve(f, np.ones(window)/window, mode='same')
     
-    if t_start_idx.size > 0 and t_end_idx.size > 0:
-        start_t = signals.time_s[t_start_idx[0]]
-        end_t = signals.time_s[t_end_idx[0]]
-        rise_time = max(0, end_t - start_t)
+    # Thresholds for detection
+    # Stand start: Force exceeds 20% of max (weight shift begins)
+    # Stand stable: Force reaches 90% of max and stays there
+    
+    start_thresh = 0.2 * max_f
+    stable_thresh = 0.85 * max_f
+    
+    # Find start
+    start_indices = np.where(f_smooth > start_thresh)[0]
+    if len(start_indices) > 0:
+        start_idx = start_indices[0]
+        start_time = float(time_s[start_idx])
     else:
-        rise_time = full_duration
+        start_idx = 0
+        start_time = 0.0
         
-    # Scoring:
-    if rise_time < 3.0 and time_stable > 2.0:
-        score = 2
-    elif rise_time < 6.0: 
-        score = 1
+    # Find stable (end of rise)
+    # Look for when force stays high consistently
+    stable_indices = np.where(f_smooth > stable_thresh)[0]
+    if len(stable_indices) > 0:
+        # Simple approach: first time it crosses stable threshold
+        end_idx = stable_indices[0]
+        end_time = float(time_s[end_idx])
+        
+        # Calculate rise duration
+        rise_duration = end_time - start_time
     else:
+        end_time = float("nan")
+        rise_duration = 0.0
+        
+    # Scoring Logic
+    if multiple_attempts:
         score = 0
+    else:
+        # Check if they actually stood up (force increased significantly)
+        # If max force is very low (< 20), they probably didn't stand on the mat
+        if max_f < 20:
+            score = 0
+        elif used_hands:
+            score = 1
+        else:
+            # No hands, single attempt. Did they stabilize?
+            # We assume if force curve is reasonable, they stabilized.
+            # Refine: check if force drops back to 0 (sat down / fell)?
+            # For now, assume success if force went up and clinician didn't mark multiple attempts.
+            score = 2
         
     features = {
-        "Stand-up Duration (s)": rise_time,
-        "Time in Stable Stance (s)": time_stable,
-        "Total Duration (s)": full_duration,
-        "Max Force": float(max_f)
+        "Rise Time (s)": rise_duration,
+        "Rise Start Time (s)": start_time,
+        "Rise End Time (s)": end_time,
+        "Max Force": float(max_f),
+        "Used Hands": used_hands,
+        "Multiple Attempts": multiple_attempts
     }
 
     return ExerciseResult(
